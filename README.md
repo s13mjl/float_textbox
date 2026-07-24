@@ -1,6 +1,6 @@
 # 📝 Float TextBox
 
-一个基于 Tauri 2 + Rust 的桌面置顶悬浮文本框，可自由调整位置和大小，支持系统托盘和透明度调节。UI 仿 B 站弹幕悬浮窗设计。
+一个基于 Tauri 2 + Rust 的桌面置顶悬浮文本框，可自由调整位置和大小，支持系统托盘和透明度调节。
 
 ![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-blue)
@@ -10,7 +10,7 @@
 
 - 🎯 **桌面置顶** - 始终悬浮在其他窗口之上
 - 📐 **自由调整** - 拖动标题栏移动，右下角缩放
-- 🎨 **深色主题** - 仿 B 站弹幕悬浮窗设计
+- 🎨 **深色主题** - 简洁现代的深色界面
 - 🔍 **透明度调节** - 标题栏滑块或 Shift+滚轮
 - 📌 **置顶切换** - 一键切换置顶状态
 - 🗂️ **系统托盘** - 最小化到托盘，单击显示/隐藏
@@ -90,8 +90,3 @@ float_textbox/
 ## 📄 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
-
-## 🙏 致谢
-
-- UI 风格参考 [bilibili-live-float](https://github.com/Dawnnnnnn/bilibili-live-float)
-- 项目作者：[@s13mjl](https://github.com/s13mjl)
