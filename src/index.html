@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>悬浮文本框</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="container">
+    <!-- 标题栏 -->
+    <div id="titleBar" data-tauri-drag-region>
+      <span id="titleLabel" data-tauri-drag-region>📝&nbsp;&nbsp;悬浮文本框</span>
+      <div class="spacer" data-tauri-drag-region></div>
+      <input id="opacitySlider" type="range" min="30" max="100" value="95"
+             title="透明度 (Shift+滚轮也可调整)" />
+      <button id="pinBtn" class="title-btn" title="切换置顶 (Ctrl+T)" data-pinned="true">📌</button>
+      <button id="minBtn" class="title-btn" title="最小化">—</button>
+      <button id="closeBtn" class="title-btn close-btn" title="最小化到托盘">✕</button>
+    </div>
+
+    <!-- 文本编辑区 -->
+    <textarea id="textEdit" placeholder="在这里输入文字…" spellcheck="false"></textarea>
+
+    <!-- 底部状态栏 -->
+    <div id="bottomBar">
+      <span id="countLabel">字符: 0</span>
+      <div class="spacer"></div>
+      <button id="clearBtn" title="清空 (Ctrl+L)">清空</button>
+      <div id="sizeGrip" title="拖动调整大小"></div>
+    </div>
+  </div>
+
+  <!-- 隐藏到托盘时的提示 toast -->
+  <div id="toast"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,16 +1,20 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-*.egg
+# Rust / Cargo
+**/target/
+**/*.rs.bk
+Cargo.lock
 
-# PyInstaller
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+src-tauri/.tauri/
+
+# 旧 PyQt5 构建产物 (已迁移到 Tauri)
 build/
 dist/
 *.spec
+__pycache__/
+*.pyc
 
 # IDE
 .idea/
@@ -22,11 +26,6 @@ dist/
 
 # OS
 Thumbs.db
-
-# Virtual env
-venv/
-.venv/
-env/
 
 # Logs
 *.log

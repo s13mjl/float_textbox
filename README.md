@@ -1,9 +1,9 @@
 # 📝 Float TextBox
 
-一个基于 PyQt5 的桌面置顶悬浮文本框，可自由调整位置和大小，支持系统托盘和透明度调节。
+一个基于 Tauri 2 + Rust 的桌面置顶悬浮文本框，可自由调整位置和大小，支持系统托盘和透明度调节。UI 仿 B 站弹幕悬浮窗设计。
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
-![PyQt5](https://img.shields.io/badge/PyQt5-5.15%2B-green)
+![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange)
+![Tauri](https://img.shields.io/badge/Tauri-2.x-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## ✨ 特性
@@ -15,7 +15,7 @@
 - 📌 **置顶切换** - 一键切换置顶状态
 - 🗂️ **系统托盘** - 最小化到托盘，单击显示/隐藏
 - ⌨️ **快捷键支持** - Ctrl+Q 退出 / Ctrl+L 清空 / Ctrl+T 切换置顶
-- 🪶 **轻量紧凑** - 最小尺寸仅 160×100
+- 🪶 **轻量紧凑** - 最小尺寸仅 160×100，打包后约 5 MB
 
 ## 📸 界面预览
 
@@ -23,25 +23,49 @@
 
 ## 🚀 快速开始
 
-### 直接运行（需安装 PyQt5）
+### 环境要求
+
+- [Rust](https://www.rust-lang.org/tools/install) 1.75+
+- [Tauri CLI](https://v2.tauri.app/start/prerequisites/) 2.x
+- Windows: WebView2 Runtime（Win10/11 通常已内置）
+
+### 开发模式运行
+
+> 本项目前端为纯静态文件（无构建步骤），**请勿使用 `cargo tauri dev`**（它会尝试连接不存在的 dev server）。
+> 直接用 `cargo run` 即可，Tauri 会通过 custom protocol 加载 `src/` 下的静态文件。
 
 ```bash
-pip install PyQt5
-python float_textbox.pyw
+cd src-tauri
+cargo run
 ```
 
-### 运行打包版本
-
-下载 [Releases](https://github.com/s13mjl/float-textbox/releases) 里的 `FloatTextBox.exe`，双击即可运行。
-
-## 📦 从源码打包
+### 从源码打包
 
 ```bash
-pip install PyQt5 pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name "FloatTextBox" float_textbox.pyw
+cargo tauri build
 ```
 
-打包完成后在 `dist/FloatTextBox.exe`。
+打包产物在 `src-tauri/target/release/bundle/`。
+
+## 📦 项目结构
+
+```
+float_textbox/
+├── src/                    # 前端 (Vanilla HTML/CSS/JS，零构建)
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
+├── src-tauri/              # Rust 后端
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   ├── capabilities/
+│   │   └── default.json    # Tauri 2 权限配置
+│   ├── icons/              # 应用图标 (PNG/ICO)
+│   └── src/
+│       ├── main.rs
+│       └── lib.rs          # 托盘/命令/事件核心逻辑
+└── gen_icons.ps1           # 图标生成脚本 (PowerShell)
+```
 
 ## ⌨️ 快捷键
 
@@ -58,9 +82,10 @@ pyinstaller --noconfirm --onefile --windowed --name "FloatTextBox" float_textbox
 
 ## 🛠️ 技术栈
 
-- **Python 3.8+** - 主语言
-- **PyQt5** - GUI 框架
-- **PyInstaller** - 打包工具
+- **Rust** - 后端语言
+- **Tauri 2** - 桌面应用框架
+- **HTML / CSS / Vanilla JS** - 前端（无构建步骤）
+- **PowerShell + System.Drawing** - 图标生成
 
 ## 📄 许可证
 
