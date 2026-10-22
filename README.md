@@ -89,7 +89,3 @@ float_textbox/
 ## 📄 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
-
-## 🙏 致谢
-
-- 项目作者：[@s13mjl](https://github.com/s13mjl)
