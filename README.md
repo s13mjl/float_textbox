@@ -92,5 +92,4 @@ float_textbox/
 
 ## 🙏 致谢
 
-- UI 风格参考 [bilibili-live-float](https://github.com/Dawnnnnnn/bilibili-live-float)
 - 项目作者：[@s13mjl](https://github.com/s13mjl)
