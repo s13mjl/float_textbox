@@ -1,17 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-*.egg
-
-# PyInstaller
-build/
-dist/
-*.spec
-
 # IDE
 .idea/
 .vscode/
@@ -23,15 +9,9 @@ dist/
 # OS
 Thumbs.db
 
-# Virtual env
-venv/
-.venv/
-env/
-
 # Logs
 *.log
 
 # Rust
 /target/
-Cargo.lock
 *.pdb
