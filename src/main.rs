@@ -5,10 +5,11 @@
 //! - 自定义标题栏：透明度滑块 / 置顶 / 最小化 / 关闭
 //! - 多行文本编辑区 + 字符计数
 //! - 右下角拖拽缩放、Shift+滚轮调节透明度
-//! - 快捷键 Ctrl+Q 退出 / Ctrl+L 清空 / Ctrl+Z 撤销清空 / Ctrl+T 切换置顶
+//! - 快捷键 Ctrl+Q 退出 / Ctrl+L 清空 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做 / Ctrl+T 切换置顶
 
 #![windows_subsystem = "windows"]
 
+use std::collections::VecDeque;
 use std::mem;
 use std::sync::OnceLock;
 
@@ -94,6 +95,12 @@ const TIMER_CLEAR_NOTICE: usize = 2;
 const TIMER_RESIZE: usize = 3;
 const TEXT_LIMIT: usize = 1_000_000;
 
+// ---- 撤销/重做 ----
+// 每条历史只保存两次状态之间的差异片段，内存与改动量成正比。
+// 这两个上限约束最坏情况下的历史内存占用。
+const UNDO_MAX_STEPS: usize = 500;
+const UNDO_MAX_CHARS: usize = 8_000_000;
+
 // ---- 窗口类名 ----
 const CLASS_NAME: PCWSTR = w!("FloatTextBoxMainWnd");
 // 编辑区右侧的自绘垂直滚动条。标准 EDIT 的滚动条不是子窗口（由 EDIT
@@ -148,6 +155,9 @@ struct AppState {
     // 把孤立代理项替换掉后撤销清空时无法逐字还原；撤销时一并恢复光标和
     // 选区，避免长文本清空后只能回到末尾重新定位。
     cleared_snapshot: Option<ClearedSnapshot>,
+    // 文本编辑的多级撤销/重做历史。标准 EDIT 只有单级原生撤销，
+    // 不能提供多级撤销和重做，因此由应用自己记录。
+    edit_history: EditHistory,
     // 字符计数专用的复用缓冲。长文本每次变化都会重新读取全文；若每次
     // 都新建 Vec，接近上限时会反复分配并复制约 2 MB。
     count_scratch: Vec<u16>,
@@ -182,6 +192,70 @@ struct ClearedSnapshot {
     text: Vec<u16>,
     selection_start: usize,
     selection_end: usize,
+}
+
+// 一次文本修改。pos 是 UTF-16 码元偏移；removed 是修改前该位置的内容，
+// inserted 是修改后的内容。撤销时用 removed 替换 inserted，重做反之。
+struct EditChange {
+    pos: usize,
+    removed: Vec<u16>,
+    inserted: Vec<u16>,
+}
+
+impl EditChange {
+    fn chars(&self) -> usize {
+        self.removed.len() + self.inserted.len()
+    }
+}
+
+struct EditHistory {
+    undo: VecDeque<EditChange>,
+    redo: Vec<EditChange>,
+    // 与当前正文一致的最新状态，用来计算下一次修改的差异。
+    last_text: Vec<u16>,
+    // 清空、恢复清空以及撤销/重做自身都会改文本；这些程序化修改不能
+    // 再记录成新历史。
+    suppress: bool,
+    // undo + redo 中保存的差异总字符数。
+    stored_chars: usize,
+}
+
+impl EditHistory {
+    fn new() -> Self {
+        Self {
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+            last_text: Vec::new(),
+            suppress: false,
+            stored_chars: 0,
+        }
+    }
+
+    // 丢弃所有历史，并把基准文本同步为给定内容。
+    fn reset(&mut self, text: Vec<u16>) {
+        self.undo.clear();
+        self.redo.clear();
+        self.last_text = text;
+        self.stored_chars = 0;
+        self.suppress = false;
+    }
+
+    fn push(&mut self, change: EditChange) {
+        // 产生新修改后，之前撤销出来的重做分支失效。
+        for step in self.redo.drain(..) {
+            self.stored_chars = self.stored_chars.saturating_sub(step.chars());
+        }
+        self.stored_chars = self.stored_chars.saturating_add(change.chars());
+        self.undo.push_back(change);
+        while self.undo.len() > UNDO_MAX_STEPS
+            || (self.stored_chars > UNDO_MAX_CHARS && self.undo.len() > 1)
+        {
+            let Some(old) = self.undo.pop_front() else {
+                break;
+            };
+            self.stored_chars = self.stored_chars.saturating_sub(old.chars());
+        }
+    }
 }
 
 // 复用的离屏缓冲，避免每次 WM_PAINT 都创建/销毁兼容位图。
@@ -321,12 +395,22 @@ unsafe fn navigate_with_tab(hwnd: HWND) -> bool {
     move_focus(state, hwnd, backward)
 }
 
-// 只接受“纯 Ctrl+Z”。AltGr 在部分布局下会同时置位 Ctrl 和 Alt；
-// Win+Ctrl+Z 属于系统组合键，不能被应用截获为清空撤销。
+// 撤销只接受“纯 Ctrl+Z”，重做只接受“纯 Ctrl+Shift+Z”。AltGr 在部分
+// 布局下会同时置位 Ctrl 和 Alt；带 Win 的组合属于系统快捷键，都不能截获。
 fn plain_ctrl_z_down() -> bool {
     unsafe {
         GetKeyState(VK_CONTROL.0 as i32) < 0
             && GetKeyState(VK_SHIFT.0 as i32) >= 0
+            && GetKeyState(VK_MENU.0 as i32) >= 0
+            && GetKeyState(VK_LWIN.0 as i32) >= 0
+            && GetKeyState(VK_RWIN.0 as i32) >= 0
+    }
+}
+
+fn plain_ctrl_shift_z_down() -> bool {
+    unsafe {
+        GetKeyState(VK_CONTROL.0 as i32) < 0
+            && GetKeyState(VK_SHIFT.0 as i32) < 0
             && GetKeyState(VK_MENU.0 as i32) >= 0
             && GetKeyState(VK_LWIN.0 as i32) >= 0
             && GetKeyState(VK_RWIN.0 as i32) >= 0
@@ -2039,12 +2123,18 @@ fn clear_text(hwnd: HWND) {
         });
         // SetWindowTextW 会同步触发 EN_CHANGE，EN_CHANGE 又会写同一份状态；
         // 因此这里只通过裸指针读写，不跨调用持有 &mut。
-        if !set_text_wide(text_edit, &[]) {
+        // 清空本身不进入多级编辑历史：它由 cleared_snapshot 单独提供
+        // 一次 Ctrl+Z 恢复，恢复后历史重新以恢复内容为基准。
+        (*p).edit_history.suppress = true;
+        let cleared = set_text_wide(text_edit, &[]);
+        (*p).edit_history.suppress = false;
+        if !cleared {
             // 清空失败时文本仍在，撤销快照必须一并撤回，避免 UI 文案与内容不一致。
             (*p).cleared_snapshot = None;
             let _ = SetFocus(text_edit);
             return;
         }
+        (*p).edit_history.reset(Vec::new());
         // WM_SETTEXT 不应再留下清空前的编辑框撤销记录。显式清空它，
         // 确保 Ctrl+Z 只由应用快照恢复；重新输入后快照失效时也不会
         // 通过原生撤销把已经声明失效的旧内容拉回来。
@@ -2103,11 +2193,17 @@ fn undo_clear(hwnd: HWND) -> bool {
             return false;
         };
         let text = &snapshot.text;
-        if !set_text_wide(hwnd, text) {
+        // 恢复清空是程序化修改，不进入多级历史；恢复后历史以恢复内容
+        // 为基准重新开始。
+        (*p).edit_history.suppress = true;
+        let restored = set_text_wide(hwnd, text);
+        (*p).edit_history.suppress = false;
+        if !restored {
             // 恢复失败说明正文仍为空；把快照放回去，允许用户再次尝试。
             (*p).cleared_snapshot = Some(snapshot);
             return false;
         }
+        (*p).edit_history.reset(snapshot.text.clone());
         let _ = KillTimer(parent, TIMER_CLEAR_NOTICE);
         (*p).clear_notice_active = false;
         // WM_SETTEXT 已经同步触发 EN_CHANGE 并预约了一次计数；这里立即
@@ -2137,15 +2233,161 @@ fn undo_clear(hwnd: HWND) -> bool {
     }
 }
 
-// 焦点在标题栏按钮或滑块时，Ctrl+Z 也应能撤销“清空”。只有存在快照
-// 且正文为空时才会拦截，其余情况保留控件自身行为。
-unsafe fn undo_clear_from_child(hwnd: HWND) -> bool {
-    let parent = GetParent(hwnd).unwrap_or_default();
+// 记录一次用户文本修改。EN_CHANGE 到达时编辑框已经是新状态，与
+// last_text 做前缀/后缀比较，只保存真正变化的片段。
+unsafe fn record_edit_change(edit: HWND) {
+    if edit.is_invalid() {
+        return;
+    }
+    let parent = GetParent(edit).unwrap_or_default();
+    let p = state_of(parent);
+    if p.is_null() || (*p).edit_history.suppress {
+        return;
+    }
+    let new_text = get_text_wide(edit);
+    let old = &(*p).edit_history.last_text;
+    if old.as_slice() == new_text.as_slice() {
+        return;
+    }
+
+    let max_prefix = old.len().min(new_text.len());
+    let mut prefix = 0;
+    while prefix < max_prefix && old[prefix] == new_text[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < max_prefix - prefix
+        && old[old.len() - 1 - suffix] == new_text[new_text.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let removed = old[prefix..old.len() - suffix].to_vec();
+    let inserted = new_text[prefix..new_text.len() - suffix].to_vec();
+    if removed.is_empty() && inserted.is_empty() {
+        return;
+    }
+
+    let history = &mut (*p).edit_history;
+    history.push(EditChange {
+        pos: prefix,
+        removed,
+        inserted,
+    });
+    history.last_text = new_text;
+}
+
+// 应用一步撤销 (redo = false) 或重做 (redo = true)。
+unsafe fn apply_edit_history(edit: HWND, redo: bool) -> bool {
+    if edit.is_invalid() {
+        return false;
+    }
+    let parent = GetParent(edit).unwrap_or_default();
     let p = state_of(parent);
     if p.is_null() {
         return false;
     }
-    undo_clear((*p).text_edit)
+
+    let step = {
+        let history = &mut (*p).edit_history;
+        if redo {
+            history.redo.pop()
+        } else {
+            history.undo.pop_back()
+        }
+    };
+    let Some(step) = step else {
+        return false;
+    };
+
+    // 撤销：文档中当前存在的是 inserted，要换回 removed。
+    // 重做：文档中当前存在的是 removed，要换回 inserted。
+    let select_len = if redo {
+        step.removed.len()
+    } else {
+        step.inserted.len()
+    };
+    let replacement = if redo {
+        step.inserted.clone()
+    } else {
+        step.removed.clone()
+    };
+    let end = step.pos.saturating_add(select_len);
+    if end > (*p).edit_history.last_text.len() {
+        // 历史与正文不一致（理论上不会发生）。丢弃历史并以当前正文
+        // 重新建立基准，避免把错误区间写进正文。
+        let current = get_text_wide(edit);
+        (*p).edit_history.reset(current);
+        return false;
+    }
+
+    let mut replacement_wide = replacement.clone();
+    replacement_wide.push(0);
+    (*p).edit_history.suppress = true;
+    let _ = send(edit, EM_SETSEL, WPARAM(step.pos), LPARAM(end as isize));
+    // wParam = FALSE：不把这次替换写入 EDIT 的原生撤销队列。
+    let _ = send(
+        edit,
+        EM_REPLACESEL,
+        WPARAM(0),
+        LPARAM(replacement_wide.as_ptr() as isize),
+    );
+    let caret = step.pos + replacement.len();
+    let _ = send(edit, EM_SETSEL, WPARAM(caret), LPARAM(caret as isize));
+    let _ = send(edit, EM_SCROLLCARET, WPARAM(0), LPARAM(0));
+    // 原生撤销只保留一级且会在两次撤销间来回切换；这里显式清空，
+    // 避免任何遗漏路径再次触发它。
+    let _ = send(edit, EM_EMPTYUNDOBUFFER, WPARAM(0), LPARAM(0));
+    (*p).edit_history.suppress = false;
+
+    {
+        let history = &mut (*p).edit_history;
+        history
+            .last_text
+            .splice(step.pos..step.pos + select_len, replacement.iter().copied());
+        if redo {
+            history.undo.push_back(step);
+        } else {
+            history.redo.push(step);
+        }
+    }
+
+    // 撤销/重做改变了正文：结束清空提示，立刻刷新字符计数和滚动条。
+    let _ = KillTimer(parent, TIMER_UPDATE_COUNT);
+    let _ = KillTimer(parent, TIMER_CLEAR_NOTICE);
+    (*p).clear_notice_active = false;
+    update_count(parent);
+    attach_scroll_bar(p);
+    let _ = SetFocus(edit);
+    true
+}
+
+unsafe fn edit_undo(edit: HWND) -> bool {
+    apply_edit_history(edit, false)
+}
+
+unsafe fn edit_redo(edit: HWND) -> bool {
+    apply_edit_history(edit, true)
+}
+
+// 按钮/滑块聚焦时的撤销、重做入口。Ctrl+Z 优先尝试“清空快照”，
+// 其余情况使用多级历史；重做只走多级历史。
+unsafe fn handle_edit_undo(control: HWND, redo: bool) -> bool {
+    let parent = GetParent(control).unwrap_or_default();
+    let p = state_of(parent);
+    if p.is_null() {
+        return false;
+    }
+    let edit = (*p).text_edit;
+    if edit.is_invalid() {
+        return false;
+    }
+    if redo {
+        edit_redo(edit)
+    } else if undo_clear(edit) {
+        true
+    } else {
+        edit_undo(edit)
+    }
 }
 
 fn show_window(hwnd: HWND) {
@@ -2430,19 +2672,30 @@ unsafe extern "system" fn text_edit_subclass_proc(
     _uid: usize,
     _data: usize,
 ) -> LRESULT {
-    if msg == WM_KEYDOWN {
-        let vk = wp.0 as u16;
-        // 标准多行 EDIT 没有原生重做；Ctrl+Shift+Z 不参与清空撤销。
-        // AltGr 在部分键盘布局下会同时置位 Ctrl 和 Alt，不能误判为 Ctrl+Z。
-        if vk == VK_Z.0 && plain_ctrl_z_down() && undo_clear(hwnd) {
+    if msg == WM_KEYDOWN && wp.0 as u16 == VK_Z.0 {
+        // 撤销/重做全部由应用层历史处理；必须吞掉按键，绝不能回退到
+        // 标准 EDIT 的单级原生撤销（它会在最近两个状态之间来回切换）。
+        if plain_ctrl_shift_z_down() {
+            let _ = edit_redo(hwnd);
             return LRESULT(0);
         }
-        if vk == VK_TAB.0 {
-            let _ = navigate_with_tab(hwnd);
+        if plain_ctrl_z_down() {
+            if !undo_clear(hwnd) {
+                let _ = edit_undo(hwnd);
+            }
             return LRESULT(0);
         }
     }
+    if msg == WM_KEYDOWN && wp.0 as u16 == VK_TAB.0 {
+        let _ = navigate_with_tab(hwnd);
+        return LRESULT(0);
+    }
     if msg == WM_CHAR && wp.0 == VK_TAB.0 as usize {
+        return LRESULT(0);
+    }
+    if msg == WM_CHAR && wp.0 == 0x1A {
+        // Ctrl+Z 经 TranslateMessage 生成的 SUB 控制字符。撤销已在
+        // WM_KEYDOWN 中完成，这里吞掉它，防止 EDIT 默认过程再撤销一次。
         return LRESULT(0);
     }
     if msg == WM_MOUSEWHEEL {
@@ -2491,8 +2744,15 @@ unsafe extern "system" fn button_subclass_proc(
                 let _ = navigate_with_tab(hwnd);
                 return LRESULT(0);
             }
-            if vk == VK_Z.0 && plain_ctrl_z_down() && undo_clear_from_child(hwnd) {
-                return LRESULT(0);
+            if vk == VK_Z.0 {
+                if plain_ctrl_shift_z_down() {
+                    let _ = handle_edit_undo(hwnd, true);
+                    return LRESULT(0);
+                }
+                if plain_ctrl_z_down() {
+                    let _ = handle_edit_undo(hwnd, false);
+                    return LRESULT(0);
+                }
             }
             if vk == VK_SPACE.0 || vk == VK_RETURN.0 {
                 // 带修饰键的空格/回车属于系统、输入法或其他语义。不能把它
@@ -2607,8 +2867,9 @@ unsafe extern "system" fn slider_subclass_proc(
             LRESULT(0)
         }
         WM_KEYDOWN
-            if wp.0 as u16 == VK_Z.0 && plain_ctrl_z_down() && undo_clear_from_child(hwnd) =>
+            if wp.0 as u16 == VK_Z.0 && (plain_ctrl_z_down() || plain_ctrl_shift_z_down()) =>
         {
+            let _ = handle_edit_undo(hwnd, plain_ctrl_shift_z_down());
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
@@ -3145,6 +3406,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 hovered_btn: HWND::default(),
                 hover_tracking: HWND::default(),
                 cleared_snapshot: None,
+                edit_history: EditHistory::new(),
                 count_scratch: Vec::new(),
                 clear_notice_active: false,
                 wheel_remainder: 0,
@@ -3670,16 +3932,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             LRESULT(0)
         }
 
-        WM_KEYDOWN if wp.0 as u16 == VK_Z.0 && plain_ctrl_z_down() => {
+        WM_KEYDOWN
+            if wp.0 as u16 == VK_Z.0 && (plain_ctrl_z_down() || plain_ctrl_shift_z_down()) =>
+        {
             // 少数情况下焦点会停在主窗口而非子控件（例如点击空白区域后
-            // 由系统把焦点交给顶层窗口），这里提供与编辑框一致的撤销入口。
+            // 由系统把焦点交给顶层窗口），这里提供与编辑框一致的入口。
             if let Ok(p) = state_ptr(hwnd) {
                 let text_edit = (*p).text_edit;
-                if !text_edit.is_invalid() && undo_clear(text_edit) {
-                    return LRESULT(0);
+                if !text_edit.is_invalid() {
+                    if plain_ctrl_shift_z_down() {
+                        let _ = edit_redo(text_edit);
+                    } else if !undo_clear(text_edit) {
+                        let _ = edit_undo(text_edit);
+                    }
                 }
             }
-            DefWindowProcW(hwnd, msg, wp, lp)
+            LRESULT(0)
         }
 
         WM_MOUSEWHEEL => {
@@ -3982,6 +4250,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 ID_TEXT_EDIT if notif == EN_CHANGE as u16 => {
                     let p = state_of(hwnd);
                     if !p.is_null() {
+                        // 记录多级撤销/重做历史。清空、恢复清空以及撤销/重做
+                        // 自身的程序化修改由 suppress 标记排除。
+                        record_edit_change((*p).text_edit);
                         // 只查长度，不在每次按键时复制整段文本。清空后一旦重新输入，
                         // 旧快照立即失效；文本仍为空时保留快照等待 Ctrl+Z。
                         let length = GetWindowTextLengthW((*p).text_edit);
