@@ -1,6 +1,6 @@
 //! 悬浮文本框 (Rust + Win32 API)
 //!
-//! 仿 B 站弹幕悬浮窗的桌面置顶文本框，使用纯 Win32 API 实现。
+//! 桌面置顶悬浮文本框，使用纯 Win32 API 实现。
 //! - 无边框 + 置顶 + 系统托盘
 //! - 自定义标题栏：透明度滑块 / 置顶 / 最小化 / 关闭
 //! - 多行文本编辑区 + 字符计数
@@ -33,7 +33,7 @@ const MK_LBUTTON: u16 = 0x0001;
 const SS_CENTERIMAGE: u32 = 0x0000_0200;
 const SS_SINGLELINE: u32 = 0x0000_0020;
 
-// ---- 主题色 (仿 B 站深灰) ----
+// ---- 主题色 (低饱和深灰) ----
 const C_BG: u32 = 0x001E1E1E;
 const C_BAR: u32 = 0x002B2B2B;
 const C_BAR_DARK: u32 = 0x00252525;
