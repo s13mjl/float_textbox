@@ -151,6 +151,10 @@ struct AppState {
     // 重新注册；WM_MOUSELEAVE 或按钮隐藏后这里必须清空，否则下一次悬停
     // 会失去离开通知。
     hover_tracking: HWND,
+    // 焦点是否由键盘（Tab）移动。焦点框只在这种情况绘制：鼠标点击
+    // owner-draw 按钮也会取得焦点，若照样画 DrawFocusRect，最小化后
+    // 恢复时按钮上会残留一个白色焦点方框。
+    focus_via_keyboard: bool,
     // 清空前的正文和选区。保留原始 UTF-16 码元，避免 from_utf16_lossy
     // 把孤立代理项替换掉后撤销清空时无法逐字还原；撤销时一并恢复光标和
     // 选区，避免长文本清空后只能回到末尾重新定位。
@@ -392,7 +396,11 @@ unsafe fn navigate_with_tab(hwnd: HWND) -> bool {
     }
     let state = &*p;
     let backward = GetKeyState(VK_SHIFT.0 as i32) < 0;
-    move_focus(state, hwnd, backward)
+    let moved = move_focus(state, hwnd, backward);
+    if moved {
+        (*p).focus_via_keyboard = true;
+    }
+    moved
 }
 
 // 撤销只接受“纯 Ctrl+Z”，重做只接受“纯 Ctrl+Shift+Z”。AltGr 在部分
@@ -2816,6 +2824,16 @@ unsafe extern "system" fn button_subclass_proc(
             set_hovered_button(hwnd, false);
             DefSubclassProc(hwnd, msg, wp, lp)
         }
+        WM_LBUTTONDOWN => {
+            // 鼠标点击也会让按钮取得焦点，但焦点框只服务键盘导航；
+            // 清掉标记，避免恢复最小化窗口后按钮上残留白色焦点方框。
+            let parent = GetParent(hwnd).unwrap_or_default();
+            let p = state_of(parent);
+            if !p.is_null() {
+                (*p).focus_via_keyboard = false;
+            }
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
         WM_CHAR if wp.0 == VK_TAB.0 as usize => LRESULT(0),
         // 空格/回车的字符消息全部吞掉：纯按键已经由上面的 WM_KEYDOWN 处理，
         // 带修饰键的则不应让标准按钮过程再补一次点击。
@@ -2871,6 +2889,14 @@ unsafe extern "system" fn slider_subclass_proc(
         {
             let _ = handle_edit_undo(hwnd, plain_ctrl_shift_z_down());
             LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let parent = GetParent(hwnd).unwrap_or_default();
+            let p = state_of(parent);
+            if !p.is_null() {
+                (*p).focus_via_keyboard = false;
+            }
+            DefSubclassProc(hwnd, msg, wp, lp)
         }
         WM_MOUSEWHEEL => {
             let parent = GetParent(hwnd).unwrap_or_default();
@@ -3405,6 +3431,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 first_hide: true,
                 hovered_btn: HWND::default(),
                 hover_tracking: HWND::default(),
+                focus_via_keyboard: false,
                 cleared_snapshot: None,
                 edit_history: EditHistory::new(),
                 count_scratch: Vec::new(),
@@ -3927,7 +3954,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             let p = state_of(hwnd);
             if !p.is_null() {
                 let backward = GetKeyState(VK_SHIFT.0 as i32) < 0;
-                let _ = focus_from_frame(&*p, backward);
+                if focus_from_frame(&*p, backward) {
+                    (*p).focus_via_keyboard = true;
+                }
             }
             LRESULT(0)
         }
@@ -4175,9 +4204,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
             SelectObject(hdc, old_font);
-            // ODS_FOCUS 在部分 owner-draw 场景下不一定可靠；用实际焦点再兜底，
-            // 保证键盘用户始终能看到焦点框。
-            let focused = dis.itemState.0 & ODS_FOCUS.0 != 0 || GetFocus() == dis.hwndItem;
+            // ODS_FOCUS 在部分 owner-draw 场景下不一定可靠；用实际焦点再兜底。
+            // 但焦点框只服务键盘导航：鼠标点击按钮同样会取得焦点，若照样
+            // 绘制，最小化后恢复时按钮上会残留一个白色焦点方框。
+            let focused = (dis.itemState.0 & ODS_FOCUS.0 != 0 || GetFocus() == dis.hwndItem)
+                && state.focus_via_keyboard;
             if focused {
                 let mut focus_rect = r;
                 focus_rect.left += 2;
@@ -4189,7 +4220,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             LRESULT(1)
         }
 
-        WM_CTLCOLORSTATIC | WM_CTLCOLORDLG => {
+        WM_CTLCOLORSTATIC | WM_CTLCOLORDLG | WM_CTLCOLORBTN => {
+            // WM_CTLCOLORBTN 决定 owner-draw 按钮擦除背景时使用的画刷。
+            // 不处理时系统会返回默认的 COLOR_BTNFACE（浅色），最小化
+            // 恢复等触发的按钮擦除会在按钮位置闪出白色方框。
             let ctl = HWND(lp.0 as *mut _);
             let p = state_of(hwnd);
             if p.is_null() {
